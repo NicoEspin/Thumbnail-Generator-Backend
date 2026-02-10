@@ -21,12 +21,18 @@ const app = express();
 
 const port = process.env.PORT || 3000;
 
+const isProd = process.env.NODE_ENV === "production";
+
 app.use(
   session({
     secret: process.env.SESSION_SECRET as string,
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }, // 1 week
+    cookie: {
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+      sameSite: isProd ? "none" : "lax",
+      secure: isProd, // requerido si sameSite = "none"
+    },
     store: MongoStore.create({
       mongoUrl: process.env.MONGO_URI as string,
       collectionName: "sessions",
@@ -34,12 +40,19 @@ app.use(
   }),
 );
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://thumblify-chi-henna.vercel.app",
+];
+
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin: allowedOrigins,
     credentials: true,
   }),
 );
+
 app.use(express.json());
 
 app.get("/", (req: Request, res: Response) => {

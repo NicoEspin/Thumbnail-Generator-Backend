@@ -49,7 +49,11 @@ export const generateThumbnail = async (req: Request, res: Response) => {
 
   try {
     const { userId } = req.session;
-
+    const rawIsPublic = (req.body as any).isPublic;
+    const isPublic =
+      rawIsPublic === undefined
+        ? true
+        : String(rawIsPublic).toLowerCase() === "true";
     const {
       title,
       prompt: user_prompt,
@@ -82,6 +86,7 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       style,
       aspect_ratio,
       color_scheme,
+      isPublic,
       text_overlay,
       reference_images,
       isGenerating: true,

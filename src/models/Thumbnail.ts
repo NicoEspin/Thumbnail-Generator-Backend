@@ -82,7 +82,7 @@ const ThumbnailSchema = new mongoose.Schema<IThumbnail>(
     },
 
     isGenerating: { type: Boolean, default: true },
-    isPublic: { type: Boolean, default: false, index: true },
+    isPublic: { type: Boolean, default: true, index: true },
   },
   { timestamps: true },
 );

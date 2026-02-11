@@ -6,8 +6,6 @@ import {
   HarmCategory,
 } from "@google/genai";
 import ai from "../config/ai.js";
-import path from "path";
-import fs from "fs";
 import { v2 as cloudinary } from "cloudinary";
 
 /**
@@ -47,6 +45,8 @@ const colorSchemeDescriptions = {
 } as const;
 
 export const generateThumbnail = async (req: Request, res: Response) => {
+  let thumbnailDoc: any = null;
+
   try {
     const { userId } = req.session;
 
@@ -57,15 +57,12 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       aspect_ratio,
       color_scheme,
       text_overlay,
-      // opcional si querés indicar roles (persona/fondo):
-      // ej: "img1=person,img2=background"
       reference_hint,
     } = req.body;
 
-    // ✅ 0..2 imágenes (si el request fue multipart/form-data)
     const files = (req as MulterRequest).files ?? [];
 
-    // ✅ Subir referencias a Cloudinary (para persistirlas y guardarlas en Mongo)
+    // ✅ Subir referencias a Cloudinary (persistencia)
     const reference_images: string[] = [];
     for (const f of files) {
       const dataUri = `data:${f.mimetype};base64,${f.buffer.toString("base64")}`;
@@ -76,8 +73,8 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       reference_images.push(up.secure_url || up.url);
     }
 
-    // ✅ Crear doc en DB (FIX: prompt_used, NO promt_used)
-    const thumbnail = await Thumbnail.create({
+    // ✅ Crear doc en DB
+    thumbnailDoc = await Thumbnail.create({
       userId,
       title,
       prompt_used: user_prompt, // se pisa luego con el prompt final
@@ -86,11 +83,10 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       aspect_ratio,
       color_scheme,
       text_overlay,
-      reference_images, // ✅ NUEVO
+      reference_images,
       isGenerating: true,
     });
 
-    // ✅ Model (tu código tenía "gemini-3-" incompleto)
     const model = "gemini-3-pro-image-preview";
 
     const generationConfig: GenerateContentConfig = {
@@ -110,7 +106,7 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       ],
     };
 
-    // ✅ Prompt mejorado + instrucciones para usar las imágenes (si existen)
+    // ✅ Prompt final
     let prompt = `Create a ${
       stylePrompts[style as keyof typeof stylePrompts]
     } YouTube thumbnail about: "${title}".`;
@@ -138,13 +134,11 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       aspect_ratio || "16:9"
     }, visually stunning and designed to maximize click-through rate. Make it bold, professional, and impossible to ignore.`;
 
-    // ✅ Guardar prompt final usado
-    thumbnail.prompt_used = prompt;
-    await thumbnail.save();
+    thumbnailDoc.prompt_used = prompt;
+    await thumbnailDoc.save();
 
-    // ✅ Multimodal contents: imágenes + texto
+    // ✅ Multimodal contents
     const parts: any[] = [];
-
     for (const f of files) {
       parts.push({
         inlineData: {
@@ -153,7 +147,6 @@ export const generateThumbnail = async (req: Request, res: Response) => {
         },
       });
     }
-
     parts.push({ text: prompt });
 
     const response: any = await ai.models.generateContent({
@@ -162,11 +155,8 @@ export const generateThumbnail = async (req: Request, res: Response) => {
       config: generationConfig,
     });
 
-    if (!response?.candidates?.[0]?.content?.parts) {
-      throw new Error("Unexpected response");
-    }
-
-    const respParts = response.candidates[0].content.parts;
+    const respParts = response?.candidates?.[0]?.content?.parts;
+    if (!respParts) throw new Error("Unexpected response");
 
     let finalBuffer: Buffer | null = null;
     for (const part of respParts) {
@@ -175,32 +165,35 @@ export const generateThumbnail = async (req: Request, res: Response) => {
         break;
       }
     }
-
     if (!finalBuffer) throw new Error("No image returned from model");
 
-    const filename = `final-output-${Date.now()}.png`;
-    const filePath = path.join("images", filename);
-
-    fs.mkdirSync("images", { recursive: true });
-    fs.writeFileSync(filePath, finalBuffer);
-
-    const uploadResult = await cloudinary.uploader.upload(filePath, {
+    // ✅ FIX PROD: subir directo a Cloudinary (sin filesystem)
+    const outDataUri = `data:image/png;base64,${finalBuffer.toString("base64")}`;
+    const uploadResult = await cloudinary.uploader.upload(outDataUri, {
       resource_type: "image",
       folder: "thumbzilla/generated",
     });
 
-    thumbnail.image_url = uploadResult.secure_url || uploadResult.url;
-    thumbnail.isGenerating = false;
+    thumbnailDoc.image_url = uploadResult.secure_url || uploadResult.url;
+    thumbnailDoc.isGenerating = false;
+    await thumbnailDoc.save();
 
-    await thumbnail.save();
-
-    res.json({ message: "Thumbnail generated", thumbnail });
-
-    // remove local file
-    fs.unlinkSync(filePath);
+    return res.json({
+      message: "Thumbnail generated",
+      thumbnail: thumbnailDoc,
+    });
   } catch (error: any) {
     console.log(error);
-    res.status(500).json({ message: error.message });
+
+    // ✅ si ya creaste el doc, marcá como fallido para que no quede “colgado”
+    if (thumbnailDoc) {
+      try {
+        thumbnailDoc.isGenerating = false;
+        await thumbnailDoc.save();
+      } catch {}
+    }
+
+    return res.status(500).json({ message: error.message });
   }
 };
 
